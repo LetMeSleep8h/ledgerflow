@@ -52,7 +52,27 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     steps:
-      - name: SSH 部署
+      - name: 配置 SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      # GHCR 包默认是私有的,服务器没有 ghcr 凭据,所以由 CI 拉取后直传
+      - name: 从 GHCR 拉取镜像
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull ${{ env.APP_IMAGE }}:${{ github.sha }}
+          docker pull ${{ env.FRAUD_IMAGE }}:${{ github.sha }}
+
+      - name: 镜像传输到服务器
+        run: |
+          docker save ${{ env.APP_IMAGE }}:${{ github.sha }} ${{ env.FRAUD_IMAGE }}:${{ github.sha }} | gzip | \
+            ssh -i ~/.ssh/deploy_key ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} \
+            'gunzip | docker load && docker tag ${{ env.APP_IMAGE }}:${{ github.sha }} ${{ env.APP_IMAGE }}:latest && docker tag ${{ env.FRAUD_IMAGE }}:${{ github.sha }} ${{ env.FRAUD_IMAGE }}:latest'
+
+      - name: 重启服务
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -67,7 +87,6 @@ jobs:
             git fetch origin ${{ github.sha }}
             git checkout -f ${{ github.sha }}
             cd ledgerflow
-            docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
             docker image prune -f
             echo "=== 当前容器状态 ==="
